@@ -39,9 +39,13 @@
 
 ## What This Does
 
-<!-- Three or four sentences: what a user asks for, and what they get back. -->
-
-
+FitFindr is a thrifting agent. You tell it what you want in one sentence — "a
+vintage graphic tee under $30, size M" — and it searches a file of 40 secondhand
+listings, picks the best match, and works out what you could wear it with from
+the wardrobe you give it. What you get back is the listing (title, price,
+platform), one or two outfit ideas that name pieces you already own, and a short
+caption you could post. If nothing in the listings fits, it stops there and says
+which part of your request to change.
 
 ---
 
@@ -59,24 +63,51 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Searches `data/listings.json` for listings that match the
+  description keywords, the size, and the price ceiling, and ranks them.
+- **Inputs:** `description` (str) — keywords, e.g. "vintage graphic tee";
+  `size` (str or None) — a size such as "M", "S/M", "US 8.5" or "W30", where
+  None skips the size filter; `max_price` (float or None) — inclusive ceiling in
+  dollars, where None skips the price filter. A size matches when it equals one
+  of the sizes the listing offers, so "M" matches "M", "S/M" and "M/L" but not
+  "XL" or "US 9".
+- **Returns:** A list of listing dicts, best match first, at most
+  `config.SEARCH_RESULT_LIMIT` (10) of them. Each dict has `id` (str), `title`
+  (str), `description` (str), `category` (str), `style_tags` (list[str]),
+  `size` (str), `condition` (str), `price` (float), `colors` (list[str]),
+  `brand` (str or None) and `platform` (str). Ranked by keyword score: 3 points
+  per keyword found in the title, 2 in tags/colors/category, 1 in the
+  description or brand; ties go to the cheaper listing.
+- **When it has nothing:** An empty list `[]` — never None, never an exception.
+  That includes a description with no usable keywords.
 
 ### `suggest_outfit`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Asks the model for one or two outfits built around the new
+  item, using the pieces in the user's wardrobe.
+- **Inputs:** `new_item` (dict) — one listing dict as returned by
+  `search_listings`; `wardrobe` (dict) — `{"items": [...]}` where each item has
+  `name` (str), `category` (str), `colors` (list[str]), `style_tags`
+  (list[str]) and `notes` (str or None).
+- **Returns:** A non-empty string of outfit suggestions, under about 120 words,
+  naming wardrobe pieces by the names they have in the wardrobe.
+- **When it has nothing:** If `wardrobe["items"]` is empty (or the wardrobe is
+  missing), it still returns a non-empty string — general styling advice for
+  the item, with no claims about what the user owns. If the model returns
+  nothing, it returns a one-line fallback suggestion built from the item title.
 
 ### `create_fit_card`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Asks the model to write a short social-media-style caption
+  about the find.
+- **Inputs:** `outfit` (str) — the string from `suggest_outfit`; `new_item`
+  (dict) — the listing dict for the item.
+- **Returns:** A string of two to four sentences that mentions the item, its
+  price and its platform, with no hashtags.
+- **When it has nothing:** If `outfit` is empty or whitespace it does not call
+  the model and returns a string beginning "No fit card written — there was no
+  outfit to build it from." (a message, not an exception, and not an empty
+  string).
 
 ---
 
@@ -93,13 +124,30 @@
      The grader checks your code against what you claim here, so the file and
      function have to be real. -->
 
-**Branch rule:**
+**Branch rule:** If `search_listings` returns an empty list, put a message in
+`session["error"]` that names what to change (the price limit, the size, or the
+keywords) and return the session — `suggest_outfit` and `create_fit_card` are
+not called, and `session["fit_card"]` stays `None`. Otherwise take the first
+result as `session["selected_item"]` and go on to `suggest_outfit`, then
+`create_fit_card`.
 
-**Where it lives:** `agent.py::run_agent`
+**Where it lives:** `agent.py::run_agent`. The loop asks `agent.py::_next_step`
+what to do next by looking at the session; the empty-search stop is the
+`if not session["search_results"]: return None` line in `_next_step`, and the
+error message is built by `agent.py::_nothing_found_message`.
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** Regular expressions, in `agent.py::parse_query` —
+no model call. A price comes from phrases like "under $30" or "$30", a size
+from "size M", "size W28", "size 8.5", or a word like "medium", and whatever is
+left (minus filler like "looking for") is the description. A missing price or
+size becomes `None`, which tells `search_listings` to skip that filter.
 
-**What moves through the session:** <!-- which fields, in what order -->
+**What moves through the session:** In order: `query` → `parsed`
+(description, size, max_price) → `search_results` (and `searched = True`) →
+`selected_item` (the first result) → `outfit_suggestion` → `fit_card`. Each
+tool call reads its inputs from the session and writes its result back, so
+`selected_item` is the same dict that `suggest_outfit` and `create_fit_card`
+receive. `error` is set only when the run ends early.
 
 ---
 
@@ -113,25 +161,64 @@
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'vintage graphic tee under $30, size M'
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
 
+  Outfit:   Hey bestie! Here are two cute ways to style your new butterfly baby tee:
+
+**Outfit 1:** Pair it with your **Baggy straight-leg jeans, dark wash** and **Chunky white sneakers**. Add the **Brown leather belt**.
+*Why it works:* The fitted tee balances the baggy dark denim, and the sneakers keep the Y2K vibe fresh and effortless. 
+
+**Outfit 2:** Layer it under your **Vintage black denim jacket**, paired with your **Wide-leg khaki trousers** and **Black combat boots**.
+*Why it works:* The cropped jacket highlights the waist of the trousers, while the boots add a cool edge to the sweet butterfly print.
+
+  Fit card: Just scored this dreamy butterfly baby tee on Depop for $18 and I am obsessed with the Y2K energy. I put together two easy ways to style it, from baggy denim to a cool jacket layered look. Let me know which fit is your favorite!🦋
+
+1 model calls this session, 1 served from cache, 313 prompt + 55 output tokens
+```
+
+The empty-search path, which doesn't touch the model:
+
+```
+$ python app.py ask 'designer ballgown size XXS under $5'
+  Nothing matched 'designer ballgown', size XXS, under $5. You could try different or fewer keywords, like a style (vintage, y2k) or a type of item (jacket, jeans).
+
+0 model calls this session
 ```
 
 **The three tools, tested one at a time**
 
 ```
-$ python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
-
+$ python -c "from tools import search_listings; print([(r['title'], r['size'], r['price']) for r in search_listings('graphic tee', max_price=30)])"
+[('Graphic Tee — 2003 Tour Bootleg Style', 'L', 24.0), ('Y2K Baby Tee — Butterfly Print', 'S/M', 18.0), ('Vintage Band Tee — Faded Grey', 'L', 19.0), ('Vintage Graphic Hoodie — Faded Black', 'L', 26.0), ('Mesh Long-Sleeve Top — Black', 'S/M', 15.0), ('Oversized Crewneck Sweatshirt — Vintage Navy', 'XL (fits oversized)', 20.0), ('Low-Rise Cargo Pants — Khaki', 'W29', 27.0)]
 ```
 
 ```
-$ python -c "from tools import suggest_outfit; ..."
-
+$ python -c "from tools import search_listings; print(search_listings('designer ballgown', size='XXS', max_price=5))"
+[]
 ```
 
 ```
-$ python -c "from tools import create_fit_card; ..."
+$ python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
+Here are two ways to style your new Vintage Levi's 501 Jeans:
 
+**Outfit 1**
+*   **Top:** White ribbed tank top
+*   **Outerwear:** Vintage black denim jacket
+*   **Shoes:** Chunky white sneakers
+*   **Accessories:** Black crossbody bag
+*   *Why it works:* The crisp white tank and sneakers balance the rugged indigo denim for an effortless, classic look.
+
+**Outfit 2**
+*   **Top:** Oversized grey crewneck sweatshirt
+*   **Shoes:** Black combat boots
+*   **Accessories:** Brown leather belt
+*   *Why it works:* Tucking the chunky sweatshirt in with the belt plays with proportions while the boots toughen up the medium wash.
+```
+
+```
+$ python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
+Scored these vintage Levi's 501 jeans on Depop for just $38 and I am obsessed. Paired them with crisp white sneakers for the ultimate effortless streetwear look.
 ```
 
 ---
@@ -147,15 +234,34 @@ $ python -c "from tools import create_fit_card; ..."
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* A query parser for `agent.py` that pulls a price, a size
+  and a description out of a sentence like "looking for a vintage graphic tee
+  under $30, size M".
+- *What came back:* Code that looked right but never found a size. I ran nine
+  made-up queries through `parse_query` and printed the result, and `size` was
+  `None` every time, with "size M" still sitting in the description. Two
+  things were wrong. The `\b` word boundaries in the regex had been turned
+  into backspace characters when the code was written out, so the pattern
+  could never match. And the size alternatives were in the wrong order, with
+  `s` before `s/m`, so "S/M" would have come out as just "S" once the first bug
+  was gone.
+- *What I changed:* Put the backslashes back, and listed the longer sizes first
+  (`s/m`, `l/xl`, `xxl`) before the single letters. I also added "dollars" to
+  the filler words after one query left it in the description. Then I re-ran
+  the same nine queries until each gave the size and price I expected.
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* A `create_fit_card` that writes a short caption from the
+  item and the outfit, mentioning the price and platform once.
+- *What came back:* Once I ran it on the real model, the first caption said
+  "this precious Y2K butterfly baby tee I just listed on Depop". It read like the seller
+  posting an ad, when the person using FitFindr is the one who bought it. The
+  price and platform were there, so nothing in my criteria would have caught it.
+- *What I changed:* Added a line to the prompt saying the writer is the buyer
+  who just found the piece, not the seller. I re-ran the same query and got
+  "Just scored this dreamy butterfly baby tee on Depop for $18", which is what
+  I wanted.
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
