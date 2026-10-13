@@ -281,19 +281,150 @@ Scored these vintage Levi's 501 jeans on Depop for just $38 and I am obsessed. P
      `python run_eval.py --label before` runs everything and writes the table
      into results/. Paste it here and fill in the verdicts. -->
 
+`python score_eval.py --label before`. It runs `run_eval.py::main` unchanged:
+every scenario in `scenarios.py` five times, cache off, temperature 0.9. That
+was 14 scenarios, 70 runs, and 130 model calls (39,226 prompt + 13,335 output
+tokens). It also wraps `suggest_outfit` and `create_fit_card` so each try
+records which item id each tool actually received, then scores every try with
+the rule in `criteria.md`.
+
+- Raw output: [results/run_2026-10-13_0030_before.md](results/run_2026-10-13_0030_before.md)
+- PASS/FAIL per try, with the reason: [results/run_2026-10-13_0030_before_scored.md](results/run_2026-10-13_0030_before_scored.md)
+
+**How a try maps to a column.** Criteria 1–3 have one scenario each, so try *k*
+is the *k*-th run. Criteria 4 and 5 are written over five *different* queries,
+so a single try of them is the whole set of five, and try *k* is the *k*-th run
+of all five. For criterion 4 the cell says how many of the five cards passed.
+Its "4 of 5 cards" has to hold in every try, not in most of them.
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. Selected item is the item both model tools receive | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit cards: 2–4 sentences, price, platform, distinct opening | 4 of 5 cards, every try | PASS (5/5) | PASS (5/5) | PASS (4/5) | PASS (5/5) | PASS (5/5) | MET (5/5) |
+| 5. Search results stay inside the size and price asked for | 0 violations, every try | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+
+The fit cards really did differ between tries: lengths for criterion 1 were
+259, 199, 205, 230 and 162 characters. So these were five real model answers,
+not cache hits.
 
 **Real output from one try**, pasted as text, naming the file and function
 that produced it:
 
+**Criterion 1, try 1.** The session came from `agent.py::run_agent`, the
+card from `tools.py::create_fit_card`, and the trace lines from
+`agent.py::run_agent` via `trace.step`:
+
+```
+- selected_item: Vintage Band Tee — Faded Grey ($19.0, depop)
+- search_results: 10
+
+Fit card:
+Just scored this faded grey vintage band tee on Depop for only $19 and I am obsessed with the grunge vibe. I'm thinking of styling it super casually with baggy denim or dressing it up a bit with tailored trousers and combat boots. Which look is your favorite?
+
+[2] search_listings (via MCP)
+      in:  description='vintage graphic tee', size=None, max_price=30.0
+      out: 10 items: Vintage Band Tee — Faded Grey, Graphic Tee — 2003 Tour Bootleg Style, Y2K Baby Tee — Butterfly Print … +7 more
+      →    branch: results — take the first
+[3] select
+      in:  search_results[0] of 10
+      out: lst_033 · Vintage Band Tee — Faded Grey ($19, depop)
+[4] suggest_outfit
+      in:  new_item=lst_033 · Vintage Band Tee — Faded Grey ($19, depop), wardrobe=10 items
+      out: Hey babe! Grab this $19 vintage band tee—it's a grunge steal. Here are two ways to style it:  **Look 1:** Pair…
+[5] create_fit_card
+      in:  outfit=(674 chars), new_item=lst_033 · Vintage Band Tee — Faded Grey ($19, depop)
+      out: Just scored this faded grey vintage band tee on Depop for only $19 and I am obsessed with the grunge vibe. I'm…
+[6] stop
+      →    nothing left to run — all three tools called
 ```
 
+**Criterion 2, try 1.** The message came from `agent.py::_nothing_found_message`.
+No `suggest_outfit` or `create_fit_card` line appears, and the wrappers recorded
+no call to either:
+
+```
+- stopped early: yes — Nothing matched 'designer ballgown', size XXS, under $5. You could try different or fewer keywords, like a style (vintage, y2k) or a type of item (jacket, jeans).
+- selected_item: (none)
+- search_results: 0
+
+[2] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', max_price=5.0
+      out: [] (empty)
+      →    branch: empty — stop before suggest_outfit
+[3] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', max_price=None
+      out: [] (empty)
+      →    looser search for the message: price limit dropped
+[4] search_listings (via MCP)
+      in:  description='designer ballgown', size=None, max_price=5.0
+      out: [] (empty)
+      →    looser search for the message: size dropped
+[5] stop
+      out: Nothing matched 'designer ballgown', size XXS, under $5. You could try different or fewer keywords, like a sty…
+      →    suggest_outfit and create_fit_card not called
+```
+
+**Criterion 3, try 1.** The ids that `suggest_outfit` and `create_fit_card`
+received were recorded by the wrappers in `score_eval.py::_recording` and
+checked by `score_eval.py::score_3`:
+
+```
+- Try 1: PASS — results[0]=lst_004, selected=lst_004, suggest_outfit got lst_004, create_fit_card got lst_004
+
+[3] select
+      in:  search_results[0] of 4
+      out: lst_004 · 90s Track Jacket — Navy/White Stripe ($45, poshmark)
+[4] suggest_outfit
+      in:  new_item=lst_004 · 90s Track Jacket — Navy/White Stripe ($45, poshmark), wardrobe=10 items
+[5] create_fit_card
+      in:  outfit=(596 chars), new_item=lst_004 · 90s Track Jacket — Navy/White Stripe ($45, poshmark)
+      out: Scored this Champion 90s navy and white track jacket on Poshmark for just $45, and I am obsessed with the vint…
+```
+
+**Criterion 4, try 3** (the one try with a failing card). Cards from
+`tools.py::create_fit_card`, scored by `score_eval.py::score_card_set`:
+
+```
+- Try 3: PASS — 4 of 5 cards pass
+    - card 1 (lst_013, 3 sentences, opens "i finally caved and"): pass
+      > I finally caved and bought this $30 floral silk slip dress on Depop, and it has the absolute dreamiest 90s cottagecore vibe. I'm totally obsessed with styling it gritty with combat boots or keeping it sweet with a denim jacket. Such a good find!
+    - card 2 (lst_019, 3 sentences, opens "scored these platform sneakers"): pass
+      > Scored these platform sneakers on Poshmark for $48 and I am obsessed with the chunky Y2K streetwear vibe. They instantly anchor my baggy denim and give the exact 90s proportions I was looking for. Such a solid find.
+    - card 3 (lst_005, 2 sentences, opens "i can't believe i"): pass
+      > I can't believe I scored these rust corduroy pants on Depop for just $32! They have the ultimate 70s cottagecore vibe, and I'm already obsessed with styling them.
+    - card 4 (lst_010, 2 sentences, opens "i finally snagged this"): fail: no $40
+      > I finally snagged this 90s color block windbreaker on thredUp for forty bucks and the teal and purple combo is so good. It has that oversized athletic streetwear vibe I've been hunting for, and I'm obsessed.
+    - card 5 (lst_028, 2 sentences, opens "scored these tan suede"): pass
+      > Scored these tan suede Chelsea boots on Poshmark for $44 and I am so obsessed with the vintage western vibe. They add the perfect earthy touch to both baggy denim and relaxed khaki trousers.
+```
+
+**Criterion 5, try 1.** Results from `tools.py::search_listings`, called
+through `mcp_server.py`, and checked by `score_eval.py::score_filters`. That
+function writes the size rule out separately instead of reusing
+`tools.py::_size_matches`, because a check that calls the code it's checking
+can't catch a bug in it:
+
+```
+- Try 1: PASS — 0 of 5 queries had a violating listing
+    - `vintage top size M under $30`: 9 results, 0 violating — sizes/prices returned: M $18, M $25, M $16, S/M $18, M $28, S/M $15, S/M $22, M $27, M $30
+    - `oversized sweatshirt size L under $25`: 1 results, 0 violating — sizes/prices returned: L/XL $17
+    - `sneakers size 8 under $50`: 1 results, 0 violating — sizes/prices returned: US 8 $48
+    - `jeans size W30 under $40`: 1 results, 0 violating — sizes/prices returned: W30 L30 $38
+    - `jacket size M under $50`: 2 results, 0 violating — sizes/prices returned: M $45, M/L $33
+```
+
+The $30 slip dress in the first query is the inclusive ceiling working. The
+`XL` and `XL (fits oversized)` sweatshirts aren't in the second query's results,
+and neither are the `US 8.5` boots in the third.
+
+**Something the criteria didn't ask about.** In try 2 of the empty-wardrobe
+diagnostic, the model service went down for real. The handler from Milestone 2
+caught it, so the run ended with a message instead of a crash:
+
+```
+- stopped early: yes — Found Denim Jacket — Light Wash, Cropped ($42 on poshmark), but the model couldn't be reached to write the outfit ideas. Couldn't reach the model: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'The service is currently unavailable.', 'status': 'UNAVAILABLE'}} The search doesn't need the model, so once that's fixed, ask again.
 ```
 
 ---
