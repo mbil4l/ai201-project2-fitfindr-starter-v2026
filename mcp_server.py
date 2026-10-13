@@ -59,7 +59,7 @@ works with a direct call, and **a documented failure earns the point in full.**
 
 from mcp.server.fastmcp import FastMCP
 
-from tools import search_listings as _search_listings_impl  # noqa: F401 — you'll use this below
+from tools import search_listings as _search_listings_impl
 
 # log_level="WARNING" keeps the server from printing an INFO line for every
 # request. Without it your terminal fills with "Processing request of type
@@ -67,28 +67,37 @@ from tools import search_listings as _search_listings_impl  # noqa: F401 — you
 mcp = FastMCP("fitfindr", log_level="WARNING")
 
 
-# ── TODO: uncomment and fill this in ──────────────────────────────────────────
+@mcp.tool()
+def search_listings(
+    description: str,
+    size: str | None = None,
+    max_price: float | None = None,
+) -> list[dict]:
+    """
+    Search 40 secondhand clothing listings (depop, thredUp, poshmark) by
+    keywords, and optionally by size and a price ceiling.
+
+    Inputs: description (str) — keywords such as "vintage graphic tee";
+    size (str, optional) — one size such as "M", "W30" or "US 8", matched
+    whole against the sizes a listing offers, so "M" matches "M", "S/M" and
+    "M/L" but never "XL" or "US 9"; leave it out to skip the size filter.
+    max_price (number, optional) — inclusive ceiling in US dollars, e.g. 30
+    for $30.00; leave it out to skip the price filter.
+
+    Returns up to 10 listings, best keyword match first (ties go to the
+    cheaper one). Each listing has id, title, description, category,
+    style_tags (list), size, condition, price (number, US dollars),
+    colors (list), brand (string or null — usually null) and platform.
+
+    When nothing matches — including a description with no usable keywords —
+    it returns an empty list, never null and never an error.
+    """
+    return _search_listings_impl(description, size, max_price)
+
+
+# Two notes on the tool above.
 #
-# @mcp.tool()
-# def search_listings(
-#     description: str,
-#     size: str | None = None,
-#     max_price: float | None = None,
-# ) -> list[dict]:
-#     """
-#     <-- YOUR DESCRIPTION GOES HERE.
-#
-#         One or two sentences. What does this tool do, what does it need, and
-#         what does it give back when it finds nothing? Written for a reader
-#         who cannot see the code.
-#     """
-#     return _search_listings_impl(description, size, max_price)
-#
-# ──────────────────────────────────────────────────────────────────────────────
-#
-# Two notes on the block above.
-#
-# The registered name is the *function* name — so the block above registers
+# The registered name is the *function* name — so the tool above registers
 # "search_listings", which is exactly what call_tool("search_listings", ...)
 # asks for. That is also why the import at the top of this file brings the real
 # implementation in under an alias: without it, the registered function and the

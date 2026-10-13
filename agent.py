@@ -17,8 +17,18 @@ import re
 
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import suggest_outfit, create_fit_card
 from generate import ModelUnavailable
+from mcp_client import call_tool, MCPError
+
+
+def _search(description: str, size: str | None, max_price: float | None) -> list[dict]:
+    """search_listings, called through the MCP server in mcp_server.py rather than directly."""
+    return call_tool("search_listings", {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    })
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -116,12 +126,12 @@ def _nothing_found_message(parsed: dict) -> str:
     suggestions = []
 
     if price is not None:
-        looser = search_listings(desc, size=size, max_price=None)
+        looser = _search(desc, size, None)
         if looser:
             cheapest = min(item["price"] for item in looser)
             suggestions.append(f"raise your price limit — the cheapest match is ${cheapest:g}")
     if size:
-        looser = search_listings(desc, size=None, max_price=price)
+        looser = _search(desc, None, price)
         if looser:
             sizes = sorted({item["size"] for item in looser})
             suggestions.append(f"try a different size — matches come in {', '.join(sizes)}")
@@ -190,9 +200,17 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
         elif step == "search":
             parsed = session["parsed"]
-            session["search_results"] = search_listings(
-                parsed["description"], size=parsed["size"], max_price=parsed["max_price"]
-            )
+            try:
+                session["search_results"] = _search(
+                    parsed["description"], parsed["size"], parsed["max_price"]
+                )
+            except MCPError:
+                session["error"] = (
+                    "The listing search couldn't be reached — the MCP server in "
+                    "mcp_server.py didn't answer. Check that `python mcp_server.py` "
+                    "starts without an error, then ask again."
+                )
+                return session
             session["searched"] = True
 
         elif step == "select":
