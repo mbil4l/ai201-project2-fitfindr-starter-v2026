@@ -371,7 +371,7 @@ received were recorded by the wrappers in `score_eval.py::_recording` and
 checked by `score_eval.py::score_3`:
 
 ```
-- Try 1: PASS — results[0]=lst_004, selected=lst_004, suggest_outfit got lst_004, create_fit_card got lst_004
+- Try 1: **PASS** — results[0]=lst_004, selected=lst_004, suggest_outfit got lst_004, create_fit_card got lst_004
 
 [3] select
       in:  search_results[0] of 4
@@ -387,7 +387,7 @@ checked by `score_eval.py::score_3`:
 `tools.py::create_fit_card`, scored by `score_eval.py::score_card_set`:
 
 ```
-- Try 3: PASS — 4 of 5 cards pass
+- Try 3: **PASS** — 4 of 5 cards pass
     - card 1 (lst_013, 3 sentences, opens "i finally caved and"): pass
       > I finally caved and bought this $30 floral silk slip dress on Depop, and it has the absolute dreamiest 90s cottagecore vibe. I'm totally obsessed with styling it gritty with combat boots or keeping it sweet with a denim jacket. Such a good find!
     - card 2 (lst_019, 3 sentences, opens "scored these platform sneakers"): pass
@@ -407,7 +407,7 @@ function writes the size rule out separately instead of reusing
 can't catch a bug in it:
 
 ```
-- Try 1: PASS — 0 of 5 queries had a violating listing
+- Try 1: **PASS** — 0 of 5 queries had a violating listing
     - `vintage top size M under $30`: 9 results, 0 violating — sizes/prices returned: M $18, M $25, M $16, S/M $18, M $28, S/M $15, S/M $22, M $27, M $30
     - `oversized sweatshirt size L under $25`: 1 results, 0 violating — sizes/prices returned: L/XL $17
     - `sneakers size 8 under $50`: 1 results, 0 violating — sizes/prices returned: US 8 $48
@@ -724,16 +724,24 @@ it — the main one in `run_agent` and the two looser re-searches in
 `_nothing_found_message` — so the agent never calls `search_listings`
 directly now. `suggest_outfit` and `create_fit_card` are unchanged.
 
-Nothing behaved differently. I called both paths on the same input and
+The *results* didn't change. I called both paths on the same input and
 compared: `call_tool(...) == search_listings(...)` was `True` (10 listing
-dicts, `price` still a float, not a string), and the impossible query came
-back as `[]`, a real empty list, so the branch's `if not
-session["search_results"]` still works. The sample query from unit 3 printed
-the same item, outfit and fit card. The one visible difference is speed: every
-`call_tool` starts the server as a new process, so a search went from about
-1 ms to about 1 s (five timed calls: 1.78, 1.01, 0.90, 0.96, 1.10 s), and the
-empty-search path (three searches) is the
-slowest path now even though it makes no model calls.
+dicts, `price` still a float, not a string). The impossible query came back as
+`[]`, a real empty list, so the branch's `if not session["search_results"]`
+still works. The sample query from unit 3 printed the same item, outfit and
+fit card.
+
+Two things did behave differently:
+
+- **Speed.** Every `call_tool` starts the server as a new process, so a search
+  went from about 1 ms to about 1 s (five timed calls: 1.78, 1.01, 0.90, 0.96,
+  1.10 s). The empty-search path makes three searches, so it's now the slowest
+  path even though it makes no model calls.
+- **A new way to fail.** A direct call to a Python function doesn't fail
+  halfway; a call that starts a process and talks to it over pipes can. One MCP
+  call out of about 160 across the two test runs did. It landed in one of the
+  two looser re-searches, which I hadn't put a handler on, and crashed the run.
+  Details under The Improvement and What's Still Broken.
 
 
 
@@ -746,24 +754,140 @@ slowest path now even though it makes no model calls.
 
      `python run_eval.py --label after` -->
 
-**What I changed:**
+**What I changed:** One prompt: the one in `tools.py::create_fit_card`. It
+still says the writer is the buyer (that line fixed the seller voice in
+unit 3). Now it also says to open with the piece's own most distinctive detail
+instead of the act of buying it, and to bring the price and platform in after
+the opening. Nothing else in the agent changed. The commit touches only
+`tools.py`, 6 lines added and 1 removed:
 
-**Which failure it was meant to fix:**
+```
+         "The writer is the buyer who just found it, not the seller. "
++        "Open with this piece's most distinctive detail from the find line — "
++        "its colour, print, fabric or era — as the very first words, so "
++        "captions for different pieces start differently. Don't open with the "
++        "act of buying it ('Scored', 'Just scored', 'Found', 'Snagged', "
++        "'I can't believe'). "
+         "Rules: two to four sentences, written like a real person posting, not "
+-        "a product description. Mention the item, its price "
++        "a product description. After the opening, mention its price "
+```
+
+**Which failure it was meant to fix:** Criterion 4 (revised), MISSED (1/5).
+The diagnosis was that the prompt made the purchase announcement ("[Just]
+scored this X on P for $N…") the natural first line of almost every card. I
+picked a prompt change because the diagnosis named a prompt, not a tool or the
+loop. The tool was already putting the price and platform in 63 of 64 cards.
 
 ### Run Log — After
 
+`python score_eval.py --label after`. Same scenarios, same 70 runs, cache off,
+130 model calls (44,284 prompt + 13,541 output tokens).
+
+- Raw output: [results/run_2026-10-13_0045_after.md](results/run_2026-10-13_0045_after.md)
+- Per try, with the reason: [results/run_2026-10-13_0045_after_scored.md](results/run_2026-10-13_0045_after_scored.md)
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | FAIL | PASS | PASS | PASS | PASS | **MISSED (4/5)** |
+| 3. Selected item is the item both model tools receive | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit cards: 2–4 sentences, price, platform, distinct opening | 4 of 5 cards, every try | PASS (5/5) | PASS (5/5) | PASS (5/5) | PASS (5/5) | PASS (5/5) | MET (5/5) |
+| 4 (revised). Opening checked by opening word | 4 of 5 cards, every try | FAIL (3/5) | FAIL (3/5) | FAIL (3/5) | PASS (5/5) | PASS (5/5) | **MISSED (2/5)** |
+| 5. Search results stay inside the size and price asked for | 0 violations, every try | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
 
-**Did it help, and how do I know:**
+**Before and after, side by side**
 
-<!-- If it made things worse, say that. Honestly reported, that earns full
-     credit and is more interesting than one that worked. -->
+| Criterion | Before | After | Change |
+|---|---|---|---|
+| 1. Matching query completes | MET (5/5) | MET (5/5) | — |
+| 2. Impossible query stops early | MET (5/5) | **MISSED (4/5)** | Worse, but not because of this change. See below |
+| 3. Same item all the way through | MET (5/5) | MET (5/5) | — |
+| 4. Fit cards, as written | MET (5/5): 24 of 25 cards | MET (5/5): 25 of 25 cards | Slightly better |
+| 4 (revised). Fit cards, opening word | MISSED (1/5): 2, 1, 1, 2, 5 cards | MISSED (2/5): 3, 3, 3, 5, 5 cards | Better (11 → 19 of 25 cards), still missed |
+| 5. Results inside size and price | MET (5/5) | MET (5/5) | — |
+
+**Real output from one try: criterion 4, try 1, after.** Cards from
+`tools.py::create_fit_card`, scored by `score_eval.py::score_card_set` with
+the revised check:
+
+```
+- Try 1: **FAIL** — 3 of 5 cards pass
+    - card 1 (lst_013, opening word "ivory"): pass
+      > Ivory silk stamped with a dreamy floral print makes this 90s midi dress the ultimate vintage cottagecore find. I snagged it on Depop for $30, and it's in such good condition. I'm obsessed with how easy it is to toughen up with combat boots or keep casual in a denim jacket. 🌿
+    - card 2 (lst_019, opening word "crisp"): pass
+      > Crisp white platform sneakers with a chunky 90s sole are officially mine for $48 on Poshmark. They bring the ultimate Y2K streetwear energy to both baggy denim and relaxed trousers.
+    - card 3 (lst_005, opening word "rich"): fail: opens like card 5
+      > Rich rust corduroy in a 70s wide-leg cut brings major earth-tone cottagecore vibes to my wardrobe. I grabbed this size W28 pair in good condition on Depop for $32, and they are so cozy for building outfits around.
+    - card 4 (lst_010, opening word "90s"): pass
+      > 90s color block purple and teal windbreakers hit totally different, especially for just $40 on thredUp. Layering this over a ribbed tank with baggy jeans gives you that effortless streetwear edge. 
+    - card 5 (lst_028, opening word "rich"): fail: opens like card 3
+      > Rich tan suede brings that perfect vintage western energy, especially for $44 on Poshmark. I am obsessed with how the earth tones anchor both minimalist trousers and classic denim.
+```
+
+**Did it help, and how do I know:** Partly. It fixed what it aimed at, still
+missed the criterion, and made two things worse that no criterion measures.
+
+*What it fixed.* The purchase-announcement opening is gone. "Scored" was in
+the first four words of 41 of 64 cards before and 0 of 65 after. Cards passing
+the revised check went from 11 of 25 to 19 of 25, and passing tries from 1 to
+2. The original checks didn't slip: the price is in 65 of 65 cards (63 of 64
+before), the platform in 65 of 65, and every card is 2–4 sentences.
+
+*Why it still missed.* All three failing tries fail on the same pair of cards:
+"**Rich** rust corduroy…" against "**Rich** tan suede…". The model puts an
+intensifier in front of the colour ("Rich", "Crisp", "Vibrant"), and both
+earth-toned items get "Rich" (8 of the 25 cards open with it). In tries 4 and
+5 the boots opened with plain "Tan suede…", and those tries passed. So it's one
+collision, the same one each time, not noise spread across all the cards.
+
+*What it made worse.* I counted these across every card in both runs, because
+the criterion can't see them:
+
+| Across all cards | Before (64) | After (65) |
+|---|---|---|
+| "scored" in the first four words | 41 | 0 |
+| price **and** platform both in sentence 1 | 59 | 12 |
+| "I grabbed" | 0 | 41 |
+| "the ultimate" | 13 | 28 |
+| "obsessed" | 43 | 6 |
+| mentions the size | 1 | 33 |
+| mentions the condition | 13 | 28 |
+
+The announcement didn't disappear. It moved to sentence two and picked up a
+new stock verb: "I grabbed it on Depop for $30" is in 41 of 65 cards. And
+"most distinctive detail *from the find line*" sent the model back to the find
+line, which also lists the size and condition. So cards now recite them: "I
+tracked them down on Depop for $32 in a size W28 and good condition". That's
+the product-description tone the prompt says to avoid. One card slipped toward
+the seller's voice ("Grab them—you'll wear these all the time!"). The template
+moved rather than going away. A criterion that only looks at the first word
+can't see that.
+
+*Criterion 2's miss isn't from this change.* The prompt only reaches
+`create_fit_card`, and the impossible query stops before any model tool. Try
+1 crashed:
+
+```
+MCPError: Couldn't call 'search_listings' over MCP: unhandled errors in a TaskGroup (1 sub-exception)
+Check that mcp_server.py runs on its own first:
+    python mcp_server.py
+If it exits immediately with an error, fix that before coming back here.
+```
+
+The live trace stopped right after step [3]: the main search and the first
+looser re-search (price dropped) both came back `[]`. The third MCP call of the
+run, the re-search with the size dropped, is the one that failed. **Place:**
+the loop's empty-search path, at the MCP call in
+`agent.py::_nothing_found_message`. **Mechanism:** I gave `run_agent` an
+`MCPError` handler around the main search in Milestone 1, but not around the two
+re-searches that build the message. When one of those failed, the exception
+went straight out of `run_agent`, and `run_eval.py` logged CRASHED. That's a
+gap in my MCP move, not in the improvement. It happened once in about 160 MCP
+calls across the two runs (80 per run: one per matching run, three per
+impossible-query run). The client's error text flattens the exception group,
+so the underlying sub-exception was lost and I can't say what failed inside
+it. More in What's Still Broken.
 
 
 
@@ -774,6 +898,84 @@ slowest path now even though it makes no model calls.
 <!-- For each criterion still missed: what you'd do, and why you stopped where
      you did. "I ran out of time" is fine if it's true. Pretending nothing is
      left is not. -->
+
+**Criterion 4 (revised): still MISSED (2/5).** Two things are left. The first
+is the one collision that fails every missed try: "Rich rust corduroy" against
+"Rich tan suede". I'd tell the model to start with the colour or fabric word
+itself, with nothing in front of it ("Rust corduroy…", "Tan suede…"). That's
+exactly how the boots opened in the two tries that passed. The second is the
+template that moved to sentence two ("I grabbed it on Depop for $30… in good
+condition"). I'd stop sending the size and condition to `create_fit_card` at
+all. They're in the find line because `_describe_item` is shared with
+`suggest_outfit`, where they're useful, but they aren't caption material.
+I'd also drop "from the find line" from the prompt. I'd tighten the criterion
+too: right now it only looks at the first word. It should also fail a set
+where the same phrase, apart from the item's own words, turns up in more than
+two of the five cards. In the after run, "I grabbed" (tries 2, 3, 5) or "the
+ultimate" (tries 2, 3, 4) shows up in three of the five cards in four of the
+five tries. Only try 1 would have passed.
+
+*Why I stopped:* this unit allows one improvement, and I've used it. Each of
+these is another prompt change, which needs its own full before-and-after run
+(130 model calls) to tell whether it helped. Changing them together would make
+the results impossible to separate.
+
+**Criterion 2: MISSED (4/5) in the after run, from the MCP move.** Two
+`_search()` calls in `agent.py::_nothing_found_message` have no `MCPError`
+handler, so when one MCP call failed there, the whole run crashed. What I'd do:
+
+1. In `_nothing_found_message`, catch `MCPError` on each re-search and skip
+   that suggestion. The stop itself is still right, so the user still gets
+   "Nothing matched…", just with the general keyword hint.
+2. Give `call_tool` one retry. Each call starts a fresh server process, so a
+   one-off failure to start is probably worth a second try.
+3. Make `mcp_client` keep the sub-exception's text. "unhandled errors in a
+   TaskGroup (1 sub-exception)" hides what actually failed, which is why I
+   can't name the root cause here.
+
+*Why I stopped:* I only saw it once, in about 160 MCP calls, so a five-try run
+can't show whether a fix works. And changing the agent after the after run
+would mean the after log no longer describes the code that's here.
+
+**Criterion 5: MET, but blind to results that are missing.** As written up
+under Verdicts, asking for `size S/M` returns nothing even though two S/M
+tees exist. Then the message suggests S/M as "a different size". The cause is
+`tools.py::_size_matches`: it splits the listing's "S/M" into halves and never
+compares the whole string. I wrote a fix for this after unit 3, but kept it
+out of this unit: only the MCP move and one improvement are allowed, and the
+diagnosis pointed at the fit card. I'd apply it, and add a check to criterion
+5 that each query also returns every listing that fits, not just nothing that
+doesn't.
+
+**Size words inside a description are read as sizes.** `agent.py::parse_query`
+takes "small", "medium" or "large" anywhere in the query as a size:
+
+```
+'small leather belt'     -> {'description': 'leather belt', 'size': 'S', 'max_price': None} -> []
+'medium wash denim vest' -> {'description': 'wash denim vest', 'size': 'M', 'max_price': None} -> [('lst_038', 'M'), ...]
+```
+
+The braided leather belt (One Size) exists, but "small" filtered it out. The
+denim vest only works because the vest happens to be size M. I'd only read
+those words as a size when they're tied to sizing ("size medium", "in a
+medium", or at the end of the query). *Why I stopped:* no criterion tests it,
+and I found it while checking the S/M bug. It's outside the one change.
+
+**A real 503 isn't retried, and the message shows the raw error.** In the
+before run the model service really did go down once. The handler caught it,
+but `generate.py` only retries rate limits (429), so a momentary 503 ended the
+run. The message also includes the provider's raw error dict ("Couldn't reach
+the model: 503 UNAVAILABLE. {'error': {'code': 503, …}}"). I'd treat 503 like
+429, wait and retry, and have `generate.py::_explain` say "The model service
+is down for a moment — wait a minute and ask again." *Why I stopped:*
+`generate.py` is the shared model adapter that came with the starter, and it
+counts as a change to the system.
+
+**Speed.** Every MCP call starts a new server process (about 1 s). I'd open one
+MCP session per run and reuse it for all three searches on the empty path.
+*Why I stopped:* the starter's client starts a process per call on purpose,
+because it's simpler to reason about, and for one person asking one question
+at a time, 1–3 s is fine.
 
 
 
