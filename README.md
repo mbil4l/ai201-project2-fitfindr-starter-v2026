@@ -342,22 +342,202 @@ that produced it:
      the same length, your branch isn't working — and this is the fastest way
      anyone will ever find that out. -->
 
-**Happy path**
+Each step is one `trace.step()` call in `agent.py::run_agent` (and two in
+`agent.py::_nothing_found_message`). The `search_listings (via MCP)` lines are
+the MCP call: the agent sends the arguments to `mcp_server.py` through
+`mcp_client.call_tool` and gets the listing dicts back.
+
+**Happy path** — cache off, so both model calls are real
 
 ```
+$ python app.py ask 'vintage graphic tee under $30, size M' --trace
+[1] parse_query
+      in:  vintage graphic tee under $30, size M
+      out: description='vintage graphic tee', size='M', max_price=30.0
+[2] search_listings (via MCP)
+      in:  description='vintage graphic tee', size='M', max_price=30.0
+      out: 8 items: Y2K Baby Tee — Butterfly Print, Vintage Polo Shirt — Forest Green, Vintage Knit Vest — Argyle Brown/Cream … +5 more
+      →    branch: results — take the first
+[3] select
+      in:  search_results[0] of 8
+      out: lst_002 · Y2K Baby Tee — Butterfly Print ($18, depop)
+[4] suggest_outfit
+      in:  new_item=lst_002 · Y2K Baby Tee — Butterfly Print ($18, depop), wardrobe=10 items
+      out: **Outfit 1** *   **Pieces:** Y2K Baby Tee — Butterfly Print, Baggy straight-leg jeans, dark wash, Chunky white…
+[5] create_fit_card
+      in:  outfit=(481 chars), new_item=lst_002 · Y2K Baby Tee — Butterfly Print ($18, depop)
+      out: I still can't believe I scored this Y2K butterfly baby tee on Depop for just $18. The pink and purple graphic …
+[6] stop
+      →    nothing left to run — all three tools called
 
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+
+  Outfit:   **Outfit 1**
+*   **Pieces:** Y2K Baby Tee — Butterfly Print, Baggy straight-leg jeans, dark wash, Chunky white sneakers
+*   **Why it works:** The fitted tee balances the voluminous jeans for a classic Y2K silhouette.
+
+**Outfit 2**
+*   **Pieces:** Y2K Baby Tee — Butterfly Print, Wide-leg khaki trousers, Vintage black denim jacket, Black combat boots
+*   **Why it works:** The cropped jacket and pink-and-purple print add a sweet pop of color against neutral, utilitarian trousers.
+
+  Fit card: I still can't believe I scored this Y2K butterfly baby tee on Depop for just $18. The pink and purple graphic print is so sweet, and it looks amazing paired with baggy dark-wash jeans for that classic silhouette.
+
+2 model calls this session, 594 prompt + 172 output tokens
 ```
 
-**Empty search**
+Why each step: [1] the query has to be split into the three search inputs
+before anything else can run. [2] `_next_step` sees `searched` is False, so it
+searches. The list came back non-empty, so the branch goes on rather than
+stopping. [3] Only one item goes forward, and it's the top-ranked one. [4] and
+[5] each read their inputs back out of the session — the same `lst_002` goes
+into both. [6] `_next_step` returns None because `fit_card` is filled in.
+
+**Empty search** — visibly shorter after the branch: no `suggest_outfit`, no
+`create_fit_card`, and no model calls
 
 ```
+$ python app.py ask 'designer ballgown size XXS under $5' --trace
+[1] parse_query
+      in:  designer ballgown size XXS under $5
+      out: description='designer ballgown', size='XXS', max_price=5.0
+[2] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', max_price=5.0
+      out: [] (empty)
+      →    branch: empty — stop before suggest_outfit
+[3] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', max_price=None
+      out: [] (empty)
+      →    looser search for the message: price limit dropped
+[4] search_listings (via MCP)
+      in:  description='designer ballgown', size=None, max_price=5.0
+      out: [] (empty)
+      →    looser search for the message: size dropped
+[5] stop
+      out: Nothing matched 'designer ballgown', size XXS, under $5. You could try different or fewer keywords, like a sty…
+      →    suggest_outfit and create_fit_card not called
 
+  Nothing matched 'designer ballgown', size XXS, under $5. You could try different or fewer keywords, like a style (vintage, y2k) or a type of item (jacket, jeans).
+
+0 model calls this session
 ```
 
-**On the MCP move:** <!-- what changed in your code, and whether anything
-behaved differently afterwards. If the rewire didn't work, say exactly where it
-broke — the error text and the last thing that worked. That earns the point in
-full. -->
+Steps [3] and [4] are the message working out what to suggest: it re-runs the
+search with the price dropped, then with the size dropped. Both still came back
+empty, so the keywords are what's in the way, and that's what the message names.
+
+### Failure modes, triggered on purpose
+
+**1. Empty search.** Already handled by the branch from unit 3 — no change
+needed. The message names whichever filter is in the way:
+
+```
+$ python app.py ask 'designer ballgown size XXS under $5'
+  Nothing matched 'designer ballgown', size XXS, under $5. You could try different or fewer keywords, like a style (vintage, y2k) or a type of item (jacket, jeans).
+
+$ python app.py ask 'silk slip dress under $10'
+  Nothing matched 'silk slip dress', under $10. You could raise your price limit — the cheapest match is $28.
+
+$ python app.py ask 'platform sneakers size 12'
+  Nothing matched 'platform sneakers', size 12. You could try a different size — matches come in US 7, US 8, US 8.5, US 9.
+```
+
+**2. Empty wardrobe.** Already handled in `tools.py::suggest_outfit` — it
+switches to a general-advice prompt when `wardrobe["items"]` is empty. No crash,
+no empty string, and it doesn't claim the user owns anything:
+
+```
+$ python app.py ask 'denim jacket under $50' --empty-wardrobe --trace
+(running with an empty wardrobe)
+...
+[4] suggest_outfit
+      in:  new_item=lst_007 · Denim Jacket — Light Wash, Cropped ($42, poshmark), wardrobe=0 items
+      out: This Wrangler denim jacket is a vintage classic! Since it’s a cropped size S in excellent condition for $42, h…
+...
+  Outfit:   This Wrangler denim jacket is a vintage classic! Since it’s a cropped size S in excellent condition for $42, here is how to style it:
+
+*   **Outfit 1:** Throw it over a flowy midi dress with white canvas sneakers for an effortless high-low mix. 
+*   **Outfit 2:** Pair it with high-waisted black leggings and a plain white t-shirt for easy streetwear vibes. 
+
+**Shoes:** Go with classic low-top sneakers or chunky black boots. 
+
+**Layers:** On colder days, layer a grey cotton hoodie underneath, letting the hood pop out over the collar.
+```
+
+**3. Model unavailable.** One character of the key changed, a query I hadn't
+asked before, cache off. This one **needed a handler.** Before:
+
+```
+$ python app.py ask 'corduroy wide-leg pants under $40'
+
+ModelUnavailable: The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh key at aistudio.google.com.
+
+1 model calls this session
+```
+
+No stack trace, but only because `app.py::main` has a last-resort
+`except Exception`. `run_agent` itself raised, so the session was thrown away:
+the user never saw the corduroy pants the search *had* found, the exit code was
+1, and `run_eval.py` would have logged the try as CRASHED. I added
+`agent.py::_model_unavailable`, which `run_agent` calls when `suggest_outfit` or
+`create_fit_card` raises `ModelUnavailable`. It puts a message in
+`session["error"]` and returns the session. After:
+
+```
+$ python app.py ask 'corduroy wide-leg pants under $40' --trace
+[1] parse_query
+      in:  corduroy wide-leg pants under $40
+      out: description='corduroy wide-leg pants', size=None, max_price=40.0
+[2] search_listings (via MCP)
+      in:  description='corduroy wide-leg pants', size=None, max_price=40.0
+      out: 4 items: Corduroy Wide-Leg Pants — Rust, Low-Rise Cargo Pants — Khaki, Straight Leg Khaki Trousers — Olive … +1 more
+      →    branch: results — take the first
+[3] select
+      in:  search_results[0] of 4
+      out: lst_005 · Corduroy Wide-Leg Pants — Rust ($32, depop)
+[4] suggest_outfit
+      in:  new_item=lst_005 · Corduroy Wide-Leg Pants — Rust ($32, depop), wardrobe=10 items
+      out: ModelUnavailable: The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh k…
+      →    model unreachable — stopping, error in session
+
+  Found Corduroy Wide-Leg Pants — Rust ($32 on depop), but the model couldn't be reached to write the outfit ideas. The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh key at aistudio.google.com. The search doesn't need the model, so once that's fixed, ask again.
+
+1 model calls this session
+```
+
+It says what broke (the model, at the outfit step), why (the key was
+rejected), what to do (check the key or make a new one), and keeps the result
+of the search that did work. Key put back afterwards.
+
+**4. MCP server unreachable** (not one of the three, but the MCP move added
+it). I pointed `mcp_client.SERVER` at a file that doesn't exist:
+
+```
+error: The listing search couldn't be reached — the MCP server in mcp_server.py didn't answer. Check that `python mcp_server.py` starts without an error, then ask again.
+fit_card: None
+```
+
+**On the MCP move:** `search_listings` is registered in
+`mcp_server.py` with FastMCP, under the same name and the same typed inputs as
+the Tool Inventory (`description: str`, `size: str | None`,
+`max_price: float | None`). The description is written for a caller who can't
+see my code: units on the price (inclusive, US dollars), what "size matches"
+means, every field in a returned listing, and that nothing found is `[]`, not
+null or an error. In `agent.py` the direct call became `_search()`, which calls
+`mcp_client.call_tool("search_listings", {...})`. All three searches go through
+it — the main one in `run_agent` and the two looser re-searches in
+`_nothing_found_message` — so the agent never calls `search_listings`
+directly now. `suggest_outfit` and `create_fit_card` are unchanged.
+
+Nothing behaved differently. I called both paths on the same input and
+compared: `call_tool(...) == search_listings(...)` was `True` (10 listing
+dicts, `price` still a float, not a string), and the impossible query came
+back as `[]`, a real empty list, so the branch's `if not
+session["search_results"]` still works. The sample query from unit 3 printed
+the same item, outfit and fit card. The one visible difference is speed: every
+`call_tool` starts the server as a new process, so a search went from about
+1 ms to about 1 s (five timed calls: 1.78, 1.01, 0.90, 0.96, 1.10 s), and the
+empty-search path (three searches) is the
+slowest path now even though it makes no model calls.
 
 
 

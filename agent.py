@@ -127,11 +127,15 @@ def _nothing_found_message(parsed: dict) -> str:
 
     if price is not None:
         looser = _search(desc, size, None)
+        trace.step("search_listings (via MCP)", inputs=_search_text(desc, size, None),
+                   returned=looser, note="looser search for the message: price limit dropped")
         if looser:
             cheapest = min(item["price"] for item in looser)
             suggestions.append(f"raise your price limit — the cheapest match is ${cheapest:g}")
     if size:
         looser = _search(desc, None, price)
+        trace.step("search_listings (via MCP)", inputs=_search_text(desc, None, price),
+                   returned=looser, note="looser search for the message: size dropped")
         if looser:
             sizes = sorted({item["size"] for item in looser})
             suggestions.append(f"try a different size — matches come in {', '.join(sizes)}")
@@ -139,6 +143,34 @@ def _nothing_found_message(parsed: dict) -> str:
         suggestions.append("try different or fewer keywords, like a style (vintage, y2k) or a type of item (jacket, jeans)")
 
     return f"Nothing matched {asked}. You could " + "; or ".join(suggestions) + "."
+
+
+def _model_unavailable(session: dict, tool: str, inputs: str, exc: ModelUnavailable) -> dict:
+    """
+    End the run when a model tool can't reach the model. The search already
+    worked, so the message says what was found as well as what broke.
+    """
+    item = session["selected_item"]
+    what = "the outfit ideas" if tool == "suggest_outfit" else "the fit card"
+    session["error"] = (
+        f"Found {item['title']} (${item['price']:g} on {item['platform']}), but the "
+        f"model couldn't be reached to write {what}. {exc} The search doesn't need "
+        "the model, so once that's fixed, ask again."
+    )
+    trace.step(tool, inputs=inputs, returned=f"ModelUnavailable: {exc}",
+               note="model unreachable — stopping, error in session")
+    return session
+
+
+# ── trace text ────────────────────────────────────────────────────────────────
+# trace.step shortens dicts to their keys, so the inputs are passed as text.
+
+def _search_text(description: str, size: str | None, max_price: float | None) -> str:
+    return f"description={description!r}, size={size!r}, max_price={max_price!r}"
+
+
+def _item_text(item: dict) -> str:
+    return f"{item['id']} · {item['title']} (${item['price']:g}, {item['platform']})"
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
@@ -191,43 +223,74 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
         if step == "parse":
             session["parsed"] = parse_query(session["query"])
-            if not session["parsed"]["description"]:
+            parsed = session["parsed"]
+            trace.step("parse_query", inputs=session["query"],
+                       returned=_search_text(parsed["description"], parsed["size"], parsed["max_price"]))
+            if not parsed["description"]:
                 session["error"] = (
                     "I couldn't find anything to search for in that. Say what you "
                     "want — for example 'vintage graphic tee under $30, size M'."
                 )
+                trace.step("stop", returned=session["error"], note="nothing to search for — no tool called")
                 return session
 
         elif step == "search":
             parsed = session["parsed"]
+            inputs = _search_text(parsed["description"], parsed["size"], parsed["max_price"])
             try:
                 session["search_results"] = _search(
                     parsed["description"], parsed["size"], parsed["max_price"]
                 )
-            except MCPError:
+            except MCPError as exc:
                 session["error"] = (
                     "The listing search couldn't be reached — the MCP server in "
                     "mcp_server.py didn't answer. Check that `python mcp_server.py` "
                     "starts without an error, then ask again."
                 )
+                trace.step("search_listings (via MCP)", inputs=inputs,
+                           returned=f"MCPError: {str(exc).splitlines()[0]}",
+                           note="search unreachable — stopping, error in session")
                 return session
             session["searched"] = True
+            trace.step(
+                "search_listings (via MCP)", inputs=inputs, returned=session["search_results"],
+                note="branch: results — take the first" if session["search_results"]
+                else "branch: empty — stop before suggest_outfit",
+            )
 
         elif step == "select":
             session["selected_item"] = session["search_results"][0]
+            trace.step("select", inputs=f"search_results[0] of {len(session['search_results'])}",
+                       returned=_item_text(session["selected_item"]))
 
         elif step == "outfit":
-            session["outfit_suggestion"] = suggest_outfit(
-                session["selected_item"], session["wardrobe"]
-            )
+            owned = len((session["wardrobe"] or {}).get("items") or [])
+            inputs = f"new_item={_item_text(session['selected_item'])}, wardrobe={owned} items"
+            try:
+                session["outfit_suggestion"] = suggest_outfit(
+                    session["selected_item"], session["wardrobe"]
+                )
+            except ModelUnavailable as exc:
+                return _model_unavailable(session, "suggest_outfit", inputs, exc)
+            trace.step("suggest_outfit", inputs=inputs, returned=session["outfit_suggestion"])
 
         elif step == "fit_card":
-            session["fit_card"] = create_fit_card(
-                session["outfit_suggestion"], session["selected_item"]
-            )
+            inputs = (f"outfit=({len(session['outfit_suggestion'])} chars), "
+                      f"new_item={_item_text(session['selected_item'])}")
+            try:
+                session["fit_card"] = create_fit_card(
+                    session["outfit_suggestion"], session["selected_item"]
+                )
+            except ModelUnavailable as exc:
+                return _model_unavailable(session, "create_fit_card", inputs, exc)
+            trace.step("create_fit_card", inputs=inputs, returned=session["fit_card"])
 
     if session["searched"] and not session["search_results"]:
         session["error"] = _nothing_found_message(session["parsed"])
+        trace.step("stop", returned=session["error"],
+                   note="suggest_outfit and create_fit_card not called")
+    else:
+        trace.step("stop", note="nothing left to run — all three tools called")
 
     return session
 
