@@ -85,6 +85,25 @@ slightly unreliable ("Levi's 501s. Obsessed." counts as two). Not 3 of 5,
 because the price and platform are given to the model in the prompt and
 leaving one out is a real failure.
 
+> **Revised in unit 4:** Same five queries, same five items, same checks
+> (two to four sentences, the price, the platform) and the same target —
+> at least 4 of the 5 cards pass, in every try. Only the opening check
+> changes. A card fails it when its **opening word**, meaning the first
+> word after any "I", "just" or "so", is also the opening word of another
+> card in the same set. "Scored this…", "Just scored these…" and "I just
+> scored…" all open with *scored*.
+>
+> **Why revised:** The four-word check measured whether two openings were
+> the same string, not whether two cards opened the same way. The item's
+> name lands in words three and four, so "Scored this gorgeous floral…" and
+> "Scored these rust corduroy…" counted as different openings. In the
+> before run that check passed 24 of 25 cards, while "scored" was in the
+> first four words of 41 of the 64 cards the agent wrote. Those are the
+> "five cards that all open the same way" the check was meant to catch.
+> "I", "just" and "so" are skipped for the same reason: without that,
+> "Just scored" and "Scored" would be two different openings. The original
+> check is still scored next to the revised one, so both verdicts show.
+
 ---
 
 ## 5. Your choice

@@ -4,6 +4,8 @@ Run the test and score every try against criteria.md. ← UNIT 4, Milestones 3 a
 
     python score_eval.py --label before
     python score_eval.py --label after
+    python score_eval.py --rescore results/run_<stamp>_before.md
+                                  criterion 4 only, both ways, from a raw log
 
 run_eval.py runs every scenario five times with the cache off and writes the
 raw output into results/, but leaves PASS and FAIL blank. This runs
@@ -37,6 +39,7 @@ CRITERIA = {
     2: ("An impossible query stops before the second tool", "5 of 5", 5),
     3: ("Selected item is the item both model tools receive", "5 of 5", 5),
     4: ("Fit cards: 2-4 sentences, price, platform, distinct opening", "4 of 5 cards, every try", 5),
+    "4r": ("Fit cards, opening checked by opening word", "4 of 5 cards, every try", 5),
     5: ("Search results stay inside the size and price asked for", "0 violations, every try", 5),
 }
 
@@ -115,7 +118,10 @@ def score_2(record):
     if called:
         return False, f"called {', '.join(called)} after an empty search"
     message = (record["session"]["error"] or "").lower()
-    named = [word for word in ("price", "size", "keyword") if word in message]
+    # Only the suggestion counts — the first sentence echoes the query back,
+    # so "size XXS" there doesn't mean the message tells you to change the size.
+    suggestion = message.split("you could", 1)[1] if "you could" in message else ""
+    named = [word for word in ("price", "size", "keyword") if word in suggestion]
     if not named:
         return False, f"message names nothing to change: {message[:60]!r}"
     return True, f"no model tool called; message names {', '.join(named)}"
@@ -145,7 +151,22 @@ def sentences(text):
 
 
 def opening(text):
-    return " ".join(_WORD.findall(text.lower())[:4])
+    """Criterion 4 as written: the first four words."""
+    return " ".join(_WORD.findall(text.lower().replace("’", "'"))[:4])
+
+
+_LEAD_INS = {"i", "just", "so"}
+
+
+def opening_word(text):
+    """
+    Criterion 4 as revised: the first word after any "I", "just" or "so", so
+    "Scored…", "Just scored…" and "I just scored…" all open with "scored".
+    """
+    for word in _WORD.findall(text.lower().replace("’", "'")):
+        if word not in _LEAD_INS:
+            return word
+    return ""
 
 
 def has_price(card, price):
@@ -169,8 +190,12 @@ def card_problems(card, item):
     return problems
 
 
-def score_card_set(records):
-    """One try of criterion 4: five cards, at least four of them pass."""
+def score_card_set(records, revised=False):
+    """
+    One try of criterion 4: five cards, at least four of them pass. `revised`
+    swaps the four-word opening check for the opening-word one (criteria.md).
+    """
+    first = opening_word if revised else opening
     cards = []
     for record in records:
         reason = _no_card_reason(record)
@@ -181,7 +206,7 @@ def score_card_set(records):
         card = session["fit_card"].strip()
         cards.append({"card": card, "item": session["selected_item"],
                       "problems": card_problems(card, session["selected_item"]),
-                      "opening": opening(card)})
+                      "opening": first(card)})
 
     for i, entry in enumerate(cards):
         if entry["card"] is None:
@@ -241,6 +266,27 @@ def score_filters(record, scenario):
 
 # ── the report ────────────────────────────────────────────────────────────────
 
+def _label(number):
+    return "4 (revised)." if number == "4r" else f"{number}."
+
+
+def card_set_cell(crit_rows, k, revised=False):
+    """Score try k of criterion 4 and say why, card by card."""
+    ok, passed, cards = score_card_set([row["tries"][k] for row in crit_rows], revised)
+    rule = "opening word" if revised else "first four words"
+    notes = [f"- Try {k + 1}: **{'PASS' if ok else 'FAIL'}** — {passed} of 5 cards pass"]
+    for i, entry in enumerate(cards, 1):
+        item = entry["item"] or {}
+        verdict = "pass" if entry["ok"] else "fail: " + "; ".join(entry["problems"])
+        notes.append(
+            f"    - card {i} ({item.get('id', '—')}, {len(sentences(entry['card'] or ''))} sentences, "
+            f"{rule} \"{entry['opening'] or '—'}\"): {verdict}"
+        )
+        if entry["card"]:
+            notes.append(f"      > {entry['card']}")
+    return f"{'PASS' if ok else 'FAIL'} ({passed}/5)", notes
+
+
 def write_scored(rows, args):
     tries = args.tries
     by_criterion = {}
@@ -256,10 +302,10 @@ def write_scored(rows, args):
     details = []
 
     for number, (name, target, needed) in CRITERIA.items():
-        crit_rows = by_criterion.get(number, [])
-        cells, notes = [], [f"### {number}. {name}", ""]
+        crit_rows = by_criterion.get(4 if number == "4r" else number, [])
+        cells, notes = [], [f"### {_label(number)} {name}", ""]
         if not crit_rows:
-            table.append(f"| {number}. {name} | {target} | {' | '.join(['—'] * tries)} | NOT RUN |")
+            table.append(f"| {_label(number)} {name} | {target} | {' | '.join(['—'] * tries)} | NOT RUN |")
             continue
 
         for k in range(tries):
@@ -269,19 +315,10 @@ def write_scored(rows, args):
                 cells.append("PASS" if ok else "FAIL")
                 notes.append(f"- Try {k + 1}: **{'PASS' if ok else 'FAIL'}** — {why}")
 
-            elif number == 4:
-                ok, passed, cards = score_card_set([row["tries"][k] for row in crit_rows])
-                cells.append(f"{'PASS' if ok else 'FAIL'} ({passed}/5)")
-                notes.append(f"- Try {k + 1}: **{'PASS' if ok else 'FAIL'}** — {passed} of 5 cards pass")
-                for i, entry in enumerate(cards, 1):
-                    item = entry["item"] or {}
-                    verdict = "pass" if entry["ok"] else "fail: " + "; ".join(entry["problems"])
-                    notes.append(
-                        f"    - card {i} ({item.get('id', '—')}, {len(sentences(entry['card'] or ''))} sentences, "
-                        f"opens \"{entry['opening'] or '—'}\"): {verdict}"
-                    )
-                    if entry["card"]:
-                        notes.append(f"      > {entry['card']}")
+            elif number in (4, "4r"):
+                cell, card_notes = card_set_cell(crit_rows, k, revised=number == "4r")
+                cells.append(cell)
+                notes += card_notes
 
             elif number == 5:
                 results = [(row["scenario"], *score_filters(row["tries"][k], row["scenario"])) for row in crit_rows]
@@ -295,7 +332,7 @@ def write_scored(rows, args):
 
         passes = sum(cell.startswith("PASS") for cell in cells)
         verdict = f"{'MET' if passes >= needed else 'MISSED'} ({passes}/{tries})"
-        table.append(f"| {number}. {name} | {target} | {' | '.join(cells)} | {verdict} |")
+        table.append(f"| {_label(number)} {name} | {target} | {' | '.join(cells)} | {verdict} |")
         details += notes + [""]
 
     raw = max(
@@ -323,5 +360,83 @@ def write_scored(rows, args):
     print("\n".join(table))
 
 
+# ── re-scoring criterion 4 from a raw log, without running anything ───────────
+
+def _records_from_raw(text, scenario_name):
+    """
+    Rebuild just enough of each try of one scenario — the error, the item and
+    the fit card — from the markdown run_eval.py wrote.
+    """
+    from utils.data_loader import load_listings
+
+    ids = {listing["title"]: listing["id"] for listing in load_listings()}
+    section = text.split(f"### {scenario_name}\n", 1)[1].split("\n### ", 1)[0]
+    records = []
+    for block in re.split(r"\*\*Try \d+\*\*", section)[1:]:
+        if block.lstrip().startswith("Crashed:"):
+            records.append({"crashed": block.split("```")[1].strip(), "session": None, "received": []})
+            continue
+        stopped = re.search(r"- stopped early: (?:yes — (.*)|no)\n", block)
+        item = re.search(r"- selected_item: (.*) \(\$([\d.]+), (\w+)\)\n", block)
+        card = re.search(r"Fit card:\n\n```\n(.*?)\n```", block, re.S)
+        records.append({
+            "crashed": None,
+            "received": [],
+            "session": {
+                "error": stopped.group(1) if stopped and stopped.group(1) else None,
+                "selected_item": {"id": ids.get(item.group(1)), "title": item.group(1),
+                                  "price": float(item.group(2)), "platform": item.group(3)} if item else None,
+                "fit_card": card.group(1) if card else None,
+            },
+        })
+    return records
+
+
+def rescore_fit_cards(raw_path):
+    """Score criterion 4 both ways from a raw run_eval.py log, and write it next to it."""
+    from pathlib import Path
+
+    raw = Path(raw_path).resolve()
+    text = raw.read_text(encoding="utf-8")
+    crit_rows = [
+        {"scenario": s, "tries": _records_from_raw(text, s["name"])}
+        for s in scenario_module.SCENARIOS if s.get("criterion") == 4
+    ]
+    tries = min(len(row["tries"]) for row in crit_rows)
+    table = [
+        f"| Criterion | Target | {' | '.join(f'Try {i}' for i in range(1, tries + 1))} | Verdict |",
+        f"|---|---|{'|'.join(['---'] * tries)}|---|",
+    ]
+    details = []
+    for number in (4, "4r"):
+        name, target, needed = CRITERIA[number]
+        cells, notes = [], [f"### {_label(number)} {name}", ""]
+        for k in range(tries):
+            cell, card_notes = card_set_cell(crit_rows, k, revised=number == "4r")
+            cells.append(cell)
+            notes += card_notes
+        passes = sum(cell.startswith("PASS") for cell in cells)
+        table.append(f"| {_label(number)} {name} | {target} | {' | '.join(cells)} | "
+                     f"{'MET' if passes >= needed else 'MISSED'} ({passes}/{tries}) |")
+        details += notes + [""]
+
+    path = raw.with_name(raw.stem + "_crit4_rescored.md")
+    path.write_text("\n".join([
+        f"# Criterion 4, re-scored from `{raw.name}`",
+        "",
+        "- Produced by: `score_eval.py::rescore_fit_cards` — no new runs; the same",
+        "  fit cards, read back out of the raw log and scored as written and as revised.",
+        "",
+        *table, "", "## Why each try passed or failed", "", *details,
+    ]), encoding="utf-8")
+    print(f"Wrote {path.relative_to(config.ROOT)}\n")
+    print("\n".join(table))
+
+
 if __name__ == "__main__":
-    run_eval.main()
+    import sys
+
+    if len(sys.argv) == 3 and sys.argv[1] == "--rescore":
+        rescore_fit_cards(sys.argv[2])
+    else:
+        run_eval.main()

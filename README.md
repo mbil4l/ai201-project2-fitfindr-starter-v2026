@@ -449,13 +449,78 @@ caught it, so the run ended with a message instead of a crash:
 
 | # | Criterion | Target | Verdict | How I decided |
 |---|---|---|---|---|
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
-| 4 |  |  |  |  |
-| 5 |  |  |  |  |
+| 1 | A matching query completes all three tools | 4 of 5 | **MET (5/5)** | All five tries ended with a fit card. In each one the wrappers recorded `suggest_outfit` and then `create_fit_card`, once each, after a non-empty search. |
+| 2 | An impossible query stops before the second tool | 5 of 5 | **MET (5/5)** | In every try the wrappers recorded no call to either model tool, and the message's suggestion ("try different or fewer keywords…") names something to change. My scorer's detail line says "names size, keyword", but that's generous: "size" only matched because the message repeats the query back ("…size XXS…"). The suggestion itself names keywords only. That's still a PASS, and I've since changed the scorer to read only the "You could…" part. |
+| 3 | Selected item is the item both model tools receive | 5 of 5 | **MET (5/5)** | `search_results[0]`, `selected_item` and the ids the two wrapped tools received were all `lst_004` in all five tries. |
+| 4 | Fit cards: 2–4 sentences, price, platform, distinct opening | 4 of 5 cards, every try | **MET (5/5)** as written | Every try had at least 4 of 5 passing cards (5, 5, 4, 5, 5); 24 of 25 cards passed. The one fail is real: it says "forty bucks", not "$40". |
+| 4 (revised) | Same, but the opening check compares opening words | 4 of 5 cards, every try | **MISSED (1/5)** | The same 25 cards, re-scored with `python score_eval.py --rescore results/run_2026-10-13_0030_before.md`. Tries passed 2, 1, 1, 2 and 5 cards. Only try 5 held. See the revision in `criteria.md` and the diagnosis below. |
+| 5 | Search results stay inside the size and price asked for | 0 violations, every try | **MET (5/5)** | 0 violating listings across all 5 queries in all 5 tries. The results were identical in every try, which is expected: no model is involved. |
+
+[results/run_2026-10-13_0030_before_crit4_rescored.md](results/run_2026-10-13_0030_before_crit4_rescored.md)
+shows both checks card by card. Re-scoring the old rule from the raw log gave
+exactly the same row as the live run (5, 5, 4, 5, 5). That's how I know the
+re-score reads the same 25 cards.
+
+**Were the targets too low?** Partly. Criteria 2, 3 and 5 test plain code with
+no model in it, so 5 of 5 was the only target that made sense. They act as
+regression checks, and five tries of deterministic code tell me little more
+than one would. Criterion 1's 4 of 5 wasn't too generous: the diagnostic run
+hit a real 503 from the model service, and that would have been a FAIL in a
+criterion 1 try. The one I'd tighten is **criterion 5**. It counts listings
+that shouldn't be there, never listings that should be there and aren't. I
+found one of those:
+
+```
+$ python -c "from tools import search_listings; print(search_listings('baby tee', size='S/M', max_price=30))"
+[]
+$ python app.py ask 'baby tee size S/M under $30'
+  Nothing matched 'baby tee', size S/M, under $30. You could try a different size — matches come in L, S/M, W29.
+```
+
+Two S/M tees under $30 exist. `_size_matches` splits the listing's "S/M" into
+"s" and "m" and compares each half with "s/m", so a combined size asked for
+whole never matches itself. Then the message suggests the size the user
+already asked for. Criterion 5 scores that as a PASS, because an empty list has
+no violations. A tighter version would also require each query to return every
+listing that does fit.
 
 **Diagnoses**
+
+**Criterion 4 (revised) — MISSED (1/5). Place: the model's output, from
+`tools.py::create_fit_card`. Mechanism: the prompt makes the purchase
+announcement the natural first line.**
+
+The cards don't open with the same words, they open with the same *move*.
+Across the 25 cards, the opening words were *scored* 13 times, *can't* 4
+("I can't believe I scored…"), *finally* 3 ("I finally snagged…"), *am* 2, and
+*stoked*, *found* and *excited* once each. Nearly every one is the buyer
+announcing the purchase. Across all 64 cards the agent wrote in the run, 59
+have both the price and the platform in their first sentence:
+"[Just] scored this [item] on [platform] for $[price], and I'm obsessed with the
+[X] vibe."
+
+My prompt produces that. It says "The writer is the buyer who just found it"
+(a line I added in unit 3 to stop the seller voice). It also says "Mention the
+item, its price ($N) and the platform (P) once each". The quickest way to do
+all three is one opening clause: *I scored [item] on [P] for $[N]*. Each card
+is written in its own model call, with no sight of the other four, so nothing
+pushes the model off its most likely first line. Temperature 0.9 only varies
+what comes after it: "obsessed" is in 43 of the 64 cards, "vibe" in 41. Try 5
+passed because its five cards happened to land on five different opening
+words, not because anything steered them there.
+
+This is one problem, not four. Every missed try failed the same way, at the
+same step, in the same tool. It's also not a tool bug: the price was there in
+63 of 64 cards and the platform in all of them. The tool did what its prompt
+asked, and the prompt asked for this opening.
+
+**The one failing card under the original check (criterion 4, try 3).** Same
+place, a different mechanism, and inside the target's one-miss allowance. The
+prompt says to mention the price "once" but not to write it as given, so one
+card in 64 wrote "forty bucks". I'm leaving it alone: it's 1 of 64, and the
+criterion already allows for it.
+
+**Criteria 1, 2, 3, 5.** No misses.
 
 
 
